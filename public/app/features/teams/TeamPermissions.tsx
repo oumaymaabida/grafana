@@ -1,3 +1,6 @@
+import { config } from '@grafana/runtime';
+import { t } from '@grafana/i18n';
+import { Button, ClipboardButton } from '@grafana/ui';
 import { Permissions } from 'app/core/components/AccessControl/Permissions';
 import { contextSrv } from 'app/core/services/context_srv';
 import { AccessControlAction } from 'app/types/accessControl';
@@ -18,15 +21,35 @@ const TeamPermissions = (props: TeamPermissionsProps) => {
     canSetPermissions = false;
   }
 
+  const inviteUrl = config.externalUserMngLinkUrl;
+  const copyInviteLabel = t('teams.team-permissions.copy-invite-link', 'Copy invite link');
+
   return (
-    <Permissions
-      addPermissionTitle="Add member"
-      buttonLabel="Add member"
-      emptyLabel="There are no members in this team or you do not have the permissions to list the current members."
-      resource="teams"
-      resourceId={props.team.id}
-      canSetPermissions={canSetPermissions}
-    />
+    <>
+      {props.team.memberCount === 0 &&
+        (inviteUrl ? (
+          <ClipboardButton icon="copy" variant="secondary" getText={() => inviteUrl}>
+            {copyInviteLabel}
+          </ClipboardButton>
+        ) : (
+          <Button
+            icon="copy"
+            variant="secondary"
+            disabled
+            tooltip={t('teams.team-permissions.no-invite-url', 'No invite URL available')}
+          >
+            {copyInviteLabel}
+          </Button>
+        ))}
+      <Permissions
+        addPermissionTitle="Add member"
+        buttonLabel="Add member"
+        emptyLabel="There are no members in this team or you do not have the permissions to list the current members."
+        resource="teams"
+        resourceId={props.team.id}
+        canSetPermissions={canSetPermissions}
+      />
+    </>
   );
 };
 
