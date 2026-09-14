@@ -1,5 +1,5 @@
-import { config } from '@grafana/runtime';
 import { t } from '@grafana/i18n';
+import { config } from '@grafana/runtime';
 import { Button, ClipboardButton } from '@grafana/ui';
 import { Permissions } from 'app/core/components/AccessControl/Permissions';
 import { contextSrv } from 'app/core/services/context_srv';
