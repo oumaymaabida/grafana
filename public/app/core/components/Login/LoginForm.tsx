@@ -64,7 +64,7 @@ export const LoginForm = ({ children, onSubmit, isLoggingIn, passwordHint, login
           className={styles.submitButton}
           disabled={isLoggingIn}
         >
-          {isLoggingIn ? t('login.form.submit-loading-label', 'Logging in...') : t('login.form.submit-label', 'Log in')}
+          {isLoggingIn ? t('login.form.submit-loading-label', 'Logging in...') : t('login.form.submit-label', 'Sign in')}
         </Button>
         {children}
       </form>
