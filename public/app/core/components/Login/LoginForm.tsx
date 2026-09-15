@@ -33,7 +33,7 @@ export const LoginForm = ({ children, onSubmit, isLoggingIn, passwordHint, login
     <div className={styles.wrapper}>
       <form onSubmit={handleSubmit(onSubmit)}>
         <Field
-          label={t('login.form.username-label', 'Email or username')}
+          label={t('login.form.username-label', 'Email')}
           invalid={!!errors.user}
           error={errors.user?.message}
         >
