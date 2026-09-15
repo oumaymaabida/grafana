@@ -10,6 +10,7 @@ export function getSelectableThemes() {
     'gildedgrove',
     'sapphiredusk',
     'tron',
+    'pink',
     'gloom',
   ];
 
