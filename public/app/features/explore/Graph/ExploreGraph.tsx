@@ -40,6 +40,7 @@ import {
 } from '../../dashboard/dashgrid/SeriesVisibilityConfigFactory';
 import { useExploreDataLinkPostProcessor } from '../hooks/useExploreDataLinkPostProcessor';
 
+import { addMovingAverageOverlay } from './addMovingAverageOverlay';
 import { applyGraphStyle, applyThresholdsConfig } from './exploreGraphStyleUtils';
 import { useStructureRev } from './useStructureRev';
 
@@ -64,6 +65,7 @@ interface Props {
   vizLegendOverrides?: Partial<VizLegendOptions>;
   toggleLegendRef?: React.MutableRefObject<(name: string | undefined, mode: SeriesVisibilityChangeMode) => void>;
   queriesChangedIndexAtRun?: number;
+  movingAverageWindow?: number;
 }
 
 export function ExploreGraph({
@@ -87,6 +89,7 @@ export function ExploreGraph({
   vizLegendOverrides,
   toggleLegendRef,
   queriesChangedIndexAtRun,
+  movingAverageWindow,
 }: Props) {
   const theme = useTheme2();
 
@@ -127,7 +130,7 @@ export function ExploreGraph({
   const dataLinkPostProcessor = useExploreDataLinkPostProcessor(splitOpenFn, timeRange);
 
   const dataWithConfig = useMemo(() => {
-    return applyFieldOverrides({
+    const withOverrides = applyFieldOverrides({
       fieldConfig: styledFieldConfig,
       data,
       timeZone,
@@ -135,7 +138,13 @@ export function ExploreGraph({
       theme,
       fieldConfigRegistry,
     });
-  }, [fieldConfigRegistry, data, timeZone, theme, styledFieldConfig]);
+
+    if (movingAverageWindow == null) {
+      return withOverrides;
+    }
+
+    return addMovingAverageOverlay(withOverrides, movingAverageWindow, theme);
+  }, [fieldConfigRegistry, data, timeZone, theme, styledFieldConfig, movingAverageWindow]);
 
   const annotationsWithConfig = useMemo(() => {
     return applyFieldOverrides({

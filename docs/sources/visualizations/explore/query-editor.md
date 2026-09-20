@@ -182,6 +182,8 @@ To add a query, follow these steps:
 Grafana queries the data source.
 If the data source supports graph and table data, Explore displays the results in the **Graph**.
 
+Use **Moving average** in the Graph panel header to overlay a trailing simple moving average on each series. The window is the number of points included in each average. The overlay is drawn as a dashed line in the same color as the source series.
+
 ## Manage queries
 
 The following table describes actions you can take for each query:

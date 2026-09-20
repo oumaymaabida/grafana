@@ -12,7 +12,7 @@ import {
   type TimeRange,
 } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
-import { type GraphThresholdsStyleConfig, PanelChrome, type PanelChromeProps } from '@grafana/ui';
+import { type GraphThresholdsStyleConfig, PanelChrome, type PanelChromeProps, Stack } from '@grafana/ui';
 import { type ExploreGraphStyle } from 'app/types/explore';
 
 import { LimitedDataDisclaimer } from '../LimitedDataDisclaimer';
@@ -20,7 +20,14 @@ import { storeGraphStyle } from '../state/utils';
 
 import { ExploreGraph } from './ExploreGraph';
 import { ExploreGraphLabel } from './ExploreGraphLabel';
-import { loadGraphStyle } from './utils';
+import { ExploreGraphMovingAverage } from './ExploreGraphMovingAverage';
+import {
+  loadGraphStyle,
+  loadMovingAverageEnabled,
+  loadMovingAverageWindow,
+  storeMovingAverageEnabled,
+  storeMovingAverageWindow,
+} from './utils';
 
 const MAX_NUMBER_OF_TIME_SERIES = 20;
 
@@ -58,10 +65,22 @@ export const GraphContainer = ({
 }: Props) => {
   const [showAllSeries, toggleShowAllSeries] = useToggle(false);
   const [graphStyle, setGraphStyle] = useState(loadGraphStyle);
+  const [movingAverageEnabled, setMovingAverageEnabled] = useState(loadMovingAverageEnabled);
+  const [movingAverageWindow, setMovingAverageWindow] = useState(loadMovingAverageWindow);
 
   const onGraphStyleChange = useCallback((graphStyle: ExploreGraphStyle) => {
     storeGraphStyle(graphStyle);
     setGraphStyle(graphStyle);
+  }, []);
+
+  const onMovingAverageEnabledChange = useCallback((enabled: boolean) => {
+    storeMovingAverageEnabled(enabled);
+    setMovingAverageEnabled(enabled);
+  }, []);
+
+  const onMovingAverageWindowChange = useCallback((windowSize: number) => {
+    storeMovingAverageWindow(windowSize);
+    setMovingAverageWindow(windowSize);
   }, []);
 
   const slicedData = useMemo(() => {
@@ -93,7 +112,17 @@ export const GraphContainer = ({
       height={height}
       loadingState={loadingState}
       statusMessage={statusMessage}
-      actions={<ExploreGraphLabel graphStyle={graphStyle} onChangeGraphStyle={onGraphStyleChange} />}
+      actions={
+        <Stack direction="row" alignItems="center" gap={1} wrap="nowrap">
+          <ExploreGraphLabel graphStyle={graphStyle} onChangeGraphStyle={onGraphStyleChange} />
+          <ExploreGraphMovingAverage
+            enabled={movingAverageEnabled}
+            windowSize={movingAverageWindow}
+            onEnabledChange={onMovingAverageEnabledChange}
+            onWindowSizeChange={onMovingAverageWindowChange}
+          />
+        </Stack>
+      }
     >
       {(innerWidth, innerHeight) => (
         <ExploreGraph
@@ -111,6 +140,7 @@ export const GraphContainer = ({
           thresholdsStyle={thresholdsStyle}
           eventBus={eventBus}
           queriesChangedIndexAtRun={queriesChangedIndexAtRun}
+          movingAverageWindow={movingAverageEnabled ? movingAverageWindow : undefined}
         />
       )}
     </PanelChrome>
