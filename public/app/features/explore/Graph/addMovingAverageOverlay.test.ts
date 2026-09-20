@@ -59,6 +59,20 @@ describe('addMovingAverageOverlay', () => {
     });
   });
 
+  it('does not HTML-escape special characters in the source series name', () => {
+    const frames = [
+      toDataFrame({
+        fields: [
+          { name: 'time', type: FieldType.time, values: [1, 2, 3] },
+          { name: 'requests/s', type: FieldType.number, values: [1, 2, 3] },
+        ],
+      }),
+    ];
+
+    const overlay = addMovingAverageOverlay(frames, 2, theme)[0].fields[2];
+    expect(overlay.config.displayName).toBe('requests/s (moving avg)');
+  });
+
   it('leaves frames unchanged when the window is below the minimum', () => {
     const frames = [
       toDataFrame({

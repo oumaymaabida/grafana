@@ -73,7 +73,10 @@ export function addMovingAverageOverlay(frames: DataFrame[], windowSize: number,
         config: {
           unit: field.config.unit,
           decimals: field.config.decimals,
-          displayName: t('graph.container.moving-average-series', '{{name}} (moving avg)', { name: displayName }),
+          displayName: t('graph.container.moving-average-series', '{{name}} (moving avg)', {
+            name: displayName,
+            interpolation: { escapeValue: false },
+          }),
           color: {
             mode: FieldColorModeId.Fixed,
             fixedColor: seriesColor,
