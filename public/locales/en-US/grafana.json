@@ -10916,6 +10916,10 @@
   "graph": {
     "container": {
       "content": "Rendering too many series in a single panel may impact performance and make data harder to read. Consider refining your queries.",
+      "moving-average": "Moving average",
+      "moving-average-series": "{{name}} (moving avg)",
+      "moving-average-tooltip": "Overlay a trailing simple moving average on each series",
+      "moving-average-window": "Moving average window",
       "show-all-series": "Show all {{length}}",
       "show-only-series": "Showing only {{MAX_NUMBER_OF_TIME_SERIES}} series",
       "title": "Graph"
