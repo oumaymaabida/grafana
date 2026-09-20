@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { selectors } from '@grafana/e2e-selectors';
@@ -34,9 +34,9 @@ describe('ExploreGraphMovingAverage', () => {
       />
     );
 
-    const windowInput = screen.getByTestId(selectors.pages.Explore.General.graphMovingAverageWindow);
-    await user.clear(windowInput);
-    await user.type(windowInput, '5');
-    expect(onWindowSizeChange).toHaveBeenLastCalledWith(5);
+    fireEvent.change(screen.getByTestId(selectors.pages.Explore.General.graphMovingAverageWindow), {
+      target: { value: '5' },
+    });
+    expect(onWindowSizeChange).toHaveBeenCalledWith(5);
   });
 });

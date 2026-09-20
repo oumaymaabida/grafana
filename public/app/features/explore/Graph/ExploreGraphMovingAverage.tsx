@@ -26,10 +26,7 @@ export function ExploreGraphMovingAverage({ enabled, windowSize, onEnabledChange
   return (
     <Stack direction="row" alignItems="center" gap={0.5} wrap="nowrap">
       <Tooltip
-        content={t(
-          'graph.container.moving-average-tooltip',
-          'Overlay a trailing simple moving average on each series'
-        )}
+        content={t('graph.container.moving-average-tooltip', 'Overlay a trailing simple moving average on each series')}
       >
         <span>
           <InlineSwitch
