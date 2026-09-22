@@ -10,9 +10,11 @@ import {
   type LoadingState,
   type ThresholdsConfig,
   type TimeRange,
+  ThemeContext,
+  createTheme,
 } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
-import { type GraphThresholdsStyleConfig, PanelChrome, type PanelChromeProps } from '@grafana/ui';
+import { type GraphThresholdsStyleConfig, InlineSwitch, PanelChrome, type PanelChromeProps } from '@grafana/ui';
 import { type ExploreGraphStyle } from 'app/types/explore';
 
 import { LimitedDataDisclaimer } from '../LimitedDataDisclaimer';
@@ -23,6 +25,7 @@ import { ExploreGraphLabel } from './ExploreGraphLabel';
 import { loadGraphStyle } from './utils';
 
 const MAX_NUMBER_OF_TIME_SERIES = 20;
+const exploreGraphLightTheme = createTheme({ colors: { mode: 'light' } });
 
 interface Props extends Pick<PanelChromeProps, 'statusMessage'> {
   width: number;
@@ -58,6 +61,7 @@ export const GraphContainer = ({
 }: Props) => {
   const [showAllSeries, toggleShowAllSeries] = useToggle(false);
   const [graphStyle, setGraphStyle] = useState(loadGraphStyle);
+  const [graphLightMode, setGraphLightMode] = useState(false);
 
   const onGraphStyleChange = useCallback((graphStyle: ExploreGraphStyle) => {
     storeGraphStyle(graphStyle);
@@ -93,26 +97,45 @@ export const GraphContainer = ({
       height={height}
       loadingState={loadingState}
       statusMessage={statusMessage}
-      actions={<ExploreGraphLabel graphStyle={graphStyle} onChangeGraphStyle={onGraphStyleChange} />}
+      actions={
+        <>
+          <InlineSwitch
+            showLabel
+            transparent
+            label={t('graph.container.light-mode', 'Light mode')}
+            value={graphLightMode}
+            onChange={() => setGraphLightMode((enabled) => !enabled)}
+          />
+          <ExploreGraphLabel graphStyle={graphStyle} onChangeGraphStyle={onGraphStyleChange} />
+        </>
+      }
     >
-      {(innerWidth, innerHeight) => (
-        <ExploreGraph
-          graphStyle={graphStyle}
-          data={slicedData}
-          height={innerHeight}
-          width={innerWidth}
-          timeRange={timeRange}
-          onChangeTime={onChangeTime}
-          timeZone={timeZone}
-          annotations={annotations}
-          splitOpenFn={splitOpenFn}
-          loadingState={loadingState}
-          thresholdsConfig={thresholdsConfig}
-          thresholdsStyle={thresholdsStyle}
-          eventBus={eventBus}
-          queriesChangedIndexAtRun={queriesChangedIndexAtRun}
-        />
-      )}
+      {(innerWidth, innerHeight) => {
+        const graph = (
+          <ExploreGraph
+            graphStyle={graphStyle}
+            data={slicedData}
+            height={innerHeight}
+            width={innerWidth}
+            timeRange={timeRange}
+            onChangeTime={onChangeTime}
+            timeZone={timeZone}
+            annotations={annotations}
+            splitOpenFn={splitOpenFn}
+            loadingState={loadingState}
+            thresholdsConfig={thresholdsConfig}
+            thresholdsStyle={thresholdsStyle}
+            eventBus={eventBus}
+            queriesChangedIndexAtRun={queriesChangedIndexAtRun}
+          />
+        );
+
+        if (!graphLightMode) {
+          return graph;
+        }
+
+        return <ThemeContext.Provider value={exploreGraphLightTheme}>{graph}</ThemeContext.Provider>;
+      }}
     </PanelChrome>
   );
 };
