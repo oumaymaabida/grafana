@@ -755,13 +755,16 @@ func (b *kvStorageBackend) runGarbageCollection(ctx context.Context, cutoffTimeS
 	}
 }
 
-// garbageCollectGroupResource scans batches of entries in the datastore for a given
-// group+resource, in ascending order of resource version. For each object it finds the
-// newest deletion marker older than the cutoff timestamp and hard-deletes that marker plus
-// every older revision of the same object.
+// garbageCollectGroupResource scans a group+resource and, for each object, hard-deletes
+// the newest deletion marker older than the cutoff plus every revision at or below that
+// marker's resource version.
 // Revisions newer than that marker are retained, so trash left behind by an object that was
 // deleted and later recreated with the same name is collected, while the recreated revisions
 // (and any deletion still within the retention window) are kept.
+//
+// The decision uses the numeric resource version, not key order. Snowflake IDs are written
+// unpadded, so a pre-2018 id (18 digits) sorts after a later 19-digit id. Treating scan
+// order as version order deletes the live revisions when that older marker is reached.
 func (b *kvStorageBackend) garbageCollectGroupResource(ctx context.Context, group, resourceName string, cutoffTimestamp int64) error {
 	ctx, span := tracer.Start(ctx, "resource.kvStorageBackend.garbageCollectGroupResource")
 	batchSize := b.garbageCollection.BatchSize
@@ -790,17 +793,44 @@ func (b *kvStorageBackend) garbageCollectGroupResource(ctx context.Context, grou
 	var currentObject ListRequestKey
 	var buffer []DataKey
 
-	deleteBuffered := func() error {
+	// flush deletes every buffered revision at or below the newest expired deletion
+	// marker. buffer holds one object, so the marker is chosen by resource version
+	// even when an older marker sorts after the live keys.
+	flush := func() error {
 		if len(buffer) == 0 {
 			return nil
 		}
+		newestExpiredDelete := int64(-1)
+		for _, k := range buffer {
+			if k.Action == DataActionDeleted && k.ResourceVersion < cutoffTimestamp && k.ResourceVersion > newestExpiredDelete {
+				newestExpiredDelete = k.ResourceVersion
+			}
+		}
+		if newestExpiredDelete < 0 {
+			buffer = buffer[:0]
+			return nil
+		}
+
+		toDelete := make([]DataKey, 0, len(buffer))
+		for _, k := range buffer {
+			if k.ResourceVersion <= newestExpiredDelete {
+				toDelete = append(toDelete, k)
+			}
+		}
+		// Oldest first, so a partial batch delete leaves the marker (highest RV) behind
+		// and the next pass can finish. Same-length snowflakes already arrive in this
+		// order; mixed widths do not.
+		slices.SortFunc(toDelete, func(a, b DataKey) int {
+			return cmp.Compare(a.ResourceVersion, b.ResourceVersion)
+		})
+
 		if !b.garbageCollection.DryRun {
-			if err := b.dataStore.batchDelete(ctx, buffer); err != nil {
+			if err := b.dataStore.batchDelete(ctx, toDelete); err != nil {
 				return fmt.Errorf("failed to batch delete keys: %s", err)
 			}
 		}
-		totalDeleted += int64(len(buffer))
-		deletedPerNamespace[currentObject.Namespace] += int64(len(buffer))
+		totalDeleted += int64(len(toDelete))
+		deletedPerNamespace[currentObject.Namespace] += int64(len(toDelete))
 		buffer = buffer[:0]
 		return nil
 	}
@@ -838,23 +868,18 @@ func (b *kvStorageBackend) garbageCollectGroupResource(ctx context.Context, grou
 			startKey = PrefixRangeEnd(dataKey)
 
 			if objectKey != currentObject {
-				// The previous object's leftover buffer does not have a delete past its retention period.
-				buffer = buffer[:0]
+				if err := flush(); err != nil {
+					return err
+				}
 				currentObject = objectKey
 			}
 
-			// ascending scan, skip anything that's too new to be considered
+			// Too new to be eligible. Leave it out of the buffer so it cannot be deleted.
 			if dk.ResourceVersion >= cutoffTimestamp {
 				continue
 			}
 
 			buffer = append(buffer, dk)
-			if dk.Action == DataActionDeleted {
-				// Every buffered revision is <= this expired marker's RV, so it is all trash.
-				if err := deleteBuffered(); err != nil {
-					return err
-				}
-			}
 		}
 
 		// an empty page means we have scanned every key, so stop
@@ -867,6 +892,10 @@ func (b *kvStorageBackend) garbageCollectGroupResource(ctx context.Context, grou
 			return ctx.Err()
 		case <-time.After(b.garbageCollection.BatchWait):
 		}
+	}
+
+	if err := flush(); err != nil {
+		return err
 	}
 
 	if totalDeleted > 0 {
