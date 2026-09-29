@@ -603,6 +603,74 @@ func TestIntegrationGarbageCollectionGroupResource(t *testing.T) {
 
 		require.Equal(t, 2, countKeys(), "expected only the recreated revisions to remain")
 	})
+
+	t.Run("keeps live revisions when an older deletion sorts after them", func(t *testing.T) {
+		testutil.SkipIntegrationTestInShortMode(t)
+
+		ctx := testutil.NewTestContext(t, time.Now().Add(30*time.Second))
+
+		storageBackend := setupTestStorageBackend(t, func(opts *KVBackendOptions) {
+			opts.GarbageCollection = gcConfig
+		})
+		b := storageBackend
+
+		// Snowflake ids are not zero-padded, so an 18-digit id from before the
+		// May 2018 boundary sorts after a 19-digit id from 2020.
+		const (
+			oldCreated  int64 = 870067366917000000
+			oldDeleted  int64 = 870067366917046272
+			liveCreated int64 = 1267244467614646272
+		)
+		require.Less(t, fmt.Sprintf("%d", liveCreated), fmt.Sprintf("%d", oldDeleted))
+
+		for _, rev := range []struct {
+			rv     int64
+			action kv.DataAction
+		}{
+			{oldCreated, DataActionCreated},
+			{oldDeleted, DataActionDeleted},
+			{liveCreated, DataActionCreated},
+		} {
+			err := b.dataStore.Save(ctx, DataKey{
+				Namespace:       "namespace",
+				Group:           "group",
+				Resource:        "resource",
+				Name:            "resource1",
+				Folder:          "folderuid",
+				ResourceVersion: rev.rv,
+				Action:          rev.action,
+			}, bytes.NewReader([]byte("{}")))
+			require.NoError(t, err)
+		}
+
+		listKeys := func() []string {
+			t.Helper()
+			it := b.kv.Keys(ctx, dataSection, ListOptions{
+				StartKey: "group/resource/namespace/",
+				EndKey:   "group/resource/namespace0",
+			})
+			var keys []string
+			it(func(k string, err error) bool {
+				require.NoError(t, err)
+				keys = append(keys, k)
+				return true
+			})
+			return keys
+		}
+
+		before := listKeys()
+		require.Len(t, before, 3)
+		require.Contains(t, before[0], fmt.Sprintf("%d", liveCreated), "live revision must sort first for this fixture")
+
+		cutoffTimestamp := b.garbageCollectionCutoffTimestamp("group", "resource", time.Now().Add(time.Hour).UnixMicro())
+		require.Greater(t, cutoffTimestamp, liveCreated)
+		err := b.garbageCollectGroupResource(ctx, "group", "resource", cutoffTimestamp)
+		require.NoError(t, err)
+
+		after := listKeys()
+		require.Len(t, after, 1)
+		require.Contains(t, after[0], fmt.Sprintf("%d", liveCreated))
+	})
 }
 
 func TestIntegrationGarbageCollectionLoop(t *testing.T) {
