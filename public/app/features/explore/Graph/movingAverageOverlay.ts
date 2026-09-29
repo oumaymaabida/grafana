@@ -12,6 +12,10 @@ export const DEFAULT_MOVING_AVERAGE_WINDOW = 10;
 
 export const MOVING_AVERAGE_OVERLAY_FLAG = 'exploreMovingAverageOverlay';
 
+export function movingAverageFieldName(sourceName: string): string {
+  return `MA ${sourceName}`;
+}
+
 export function computeTrailingMovingAverage(
   values: Array<number | null | undefined>,
   windowSize: number
@@ -55,12 +59,19 @@ export function addMovingAverageOverlay(
   const windowSize = options.windowSize ?? DEFAULT_MOVING_AVERAGE_WINDOW;
 
   return frames.map((frame) => {
+    const existingOverlayNames = new Set(
+      frame.fields.filter((field) => field.config.custom?.[MOVING_AVERAGE_OVERLAY_FLAG]).map((field) => field.name)
+    );
+
     const overlayFields = frame.fields
       .filter((field) => {
         if (field.type !== FieldType.number) {
           return false;
         }
         if (field.config.custom?.[MOVING_AVERAGE_OVERLAY_FLAG]) {
+          return false;
+        }
+        if (existingOverlayNames.has(movingAverageFieldName(field.name))) {
           return false;
         }
         if (field.config.custom?.hideFrom?.viz) {
@@ -72,12 +83,12 @@ export function addMovingAverageOverlay(
         const displayName = getFieldDisplayName(field, frame, frames);
         const overlay = {
           ...field,
-          name: `MA ${field.name}`,
+          name: movingAverageFieldName(field.name),
           values: computeTrailingMovingAverage(field.values, windowSize),
           state: undefined,
           config: {
             ...field.config,
-            displayName: `MA ${displayName}`,
+            displayName: movingAverageFieldName(displayName),
             custom: {
               ...field.config.custom,
               [MOVING_AVERAGE_OVERLAY_FLAG]: true,

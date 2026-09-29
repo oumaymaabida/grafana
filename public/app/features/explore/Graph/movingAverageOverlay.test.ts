@@ -1,9 +1,4 @@
-import {
-  createTheme,
-  FieldColorModeId,
-  FieldType,
-  toDataFrame,
-} from '@grafana/data';
+import { createTheme, FieldColorModeId, FieldType, toDataFrame } from '@grafana/data';
 import { GraphDrawStyle, StackingMode } from '@grafana/schema';
 
 import {
@@ -67,23 +62,16 @@ describe('addMovingAverageOverlay', () => {
     expect(result.fields[4].values).toEqual([10, 15, 25]);
   });
 
-  it('does not add a second overlay when the field is already an overlay', () => {
+  it('does not add another overlay when applied a second time', () => {
     const frame = toDataFrame({
-      fields: [
-        { name: 'cpu', type: FieldType.number, values: [1, 2, 3] },
-        {
-          name: 'MA cpu',
-          type: FieldType.number,
-          values: [1, 1.5, 2],
-          config: { custom: { [MOVING_AVERAGE_OVERLAY_FLAG]: true } },
-        },
-      ],
+      fields: [{ name: 'cpu', type: FieldType.number, values: [1, 2, 3] }],
     });
 
-    const [result] = addMovingAverageOverlay([frame], { windowSize: 2 });
+    const once = addMovingAverageOverlay([frame], { windowSize: 2 });
+    const twice = addMovingAverageOverlay(once, { windowSize: 2 });
 
-    expect(result.fields.map((field) => field.name)).toEqual(['cpu', 'MA cpu']);
-    expect(result.fields[1].values).toEqual([1, 1.5, 2]);
+    expect(twice[0].fields.map((field) => field.name)).toEqual(['cpu', 'MA cpu']);
+    expect(twice[0].fields[1].values).toEqual([1, 1.5, 2.5]);
   });
 
   it('skips series hidden from the visualization', () => {
