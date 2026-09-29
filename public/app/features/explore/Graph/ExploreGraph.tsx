@@ -41,6 +41,7 @@ import {
 import { useExploreDataLinkPostProcessor } from '../hooks/useExploreDataLinkPostProcessor';
 
 import { applyGraphStyle, applyThresholdsConfig } from './exploreGraphStyleUtils';
+import { addMovingAverageOverlay } from './movingAverageOverlay';
 import { useStructureRev } from './useStructureRev';
 
 interface Props {
@@ -64,6 +65,7 @@ interface Props {
   vizLegendOverrides?: Partial<VizLegendOptions>;
   toggleLegendRef?: React.MutableRefObject<(name: string | undefined, mode: SeriesVisibilityChangeMode) => void>;
   queriesChangedIndexAtRun?: number;
+  showMovingAverage?: boolean;
 }
 
 export function ExploreGraph({
@@ -87,6 +89,7 @@ export function ExploreGraph({
   vizLegendOverrides,
   toggleLegendRef,
   queriesChangedIndexAtRun,
+  showMovingAverage = false,
 }: Props) {
   const theme = useTheme2();
 
@@ -151,7 +154,14 @@ export function ExploreGraph({
     });
   }, [annotations, timeZone, theme, dataLinkPostProcessor]);
 
-  const structureRev = useStructureRev(dataWithConfig);
+  const dataWithOverlay = useMemo(() => {
+    if (!showMovingAverage) {
+      return dataWithConfig;
+    }
+    return addMovingAverageOverlay(dataWithConfig, { theme });
+  }, [dataWithConfig, showMovingAverage, theme]);
+
+  const structureRev = useStructureRev(dataWithOverlay);
 
   const previousHiddenFrames = useRef<string[] | undefined>(undefined);
 
@@ -160,7 +170,7 @@ export function ExploreGraph({
       return;
     }
     const hiddenFrames: string[] = [];
-    dataWithConfig.forEach((frame) => {
+    dataWithOverlay.forEach((frame) => {
       const allFieldsHidden = frame.fields.map((field) => field.config?.custom?.hideFrom?.viz).every(identity);
       if (allFieldsHidden) {
         hiddenFrames.push(getFrameDisplayName(frame));
@@ -173,7 +183,7 @@ export function ExploreGraph({
       previousHiddenFrames.current = hiddenFrames;
       onHiddenSeriesChanged(hiddenFrames);
     }
-  }, [dataWithConfig, onHiddenSeriesChanged]);
+  }, [dataWithOverlay, onHiddenSeriesChanged]);
 
   const panelContext: PanelContext = {
     eventsScope: 'explore',
@@ -223,7 +233,7 @@ export function ExploreGraph({
       <PanelContextProvider value={panelContext}>
         <PanelRenderer
           data={{
-            series: dataWithConfig,
+            series: dataWithOverlay,
             timeRange,
             state: loadingState,
             annotations: annotationsWithConfig,

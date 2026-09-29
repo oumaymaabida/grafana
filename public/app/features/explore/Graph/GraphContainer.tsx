@@ -11,8 +11,9 @@ import {
   type ThresholdsConfig,
   type TimeRange,
 } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
 import { Trans, t } from '@grafana/i18n';
-import { type GraphThresholdsStyleConfig, PanelChrome, type PanelChromeProps } from '@grafana/ui';
+import { InlineSwitch, Stack, type GraphThresholdsStyleConfig, PanelChrome, type PanelChromeProps } from '@grafana/ui';
 import { type ExploreGraphStyle } from 'app/types/explore';
 
 import { LimitedDataDisclaimer } from '../LimitedDataDisclaimer';
@@ -20,7 +21,7 @@ import { storeGraphStyle } from '../state/utils';
 
 import { ExploreGraph } from './ExploreGraph';
 import { ExploreGraphLabel } from './ExploreGraphLabel';
-import { loadGraphStyle } from './utils';
+import { loadGraphStyle, loadMovingAverageOverlay, storeMovingAverageOverlay } from './utils';
 
 const MAX_NUMBER_OF_TIME_SERIES = 20;
 
@@ -58,10 +59,16 @@ export const GraphContainer = ({
 }: Props) => {
   const [showAllSeries, toggleShowAllSeries] = useToggle(false);
   const [graphStyle, setGraphStyle] = useState(loadGraphStyle);
+  const [showMovingAverage, setShowMovingAverage] = useState(loadMovingAverageOverlay);
 
   const onGraphStyleChange = useCallback((graphStyle: ExploreGraphStyle) => {
     storeGraphStyle(graphStyle);
     setGraphStyle(graphStyle);
+  }, []);
+
+  const onMovingAverageChange = useCallback((enabled: boolean) => {
+    storeMovingAverageOverlay(enabled);
+    setShowMovingAverage(enabled);
   }, []);
 
   const slicedData = useMemo(() => {
@@ -93,11 +100,23 @@ export const GraphContainer = ({
       height={height}
       loadingState={loadingState}
       statusMessage={statusMessage}
-      actions={<ExploreGraphLabel graphStyle={graphStyle} onChangeGraphStyle={onGraphStyleChange} />}
+      actions={
+        <Stack direction="row" alignItems="center" gap={1}>
+          <ExploreGraphLabel graphStyle={graphStyle} onChangeGraphStyle={onGraphStyleChange} />
+          <InlineSwitch
+            showLabel
+            label={t('graph.container.moving-average-label', 'Moving average')}
+            value={showMovingAverage}
+            onChange={(event) => onMovingAverageChange(event.currentTarget.checked)}
+            data-testid={selectors.pages.Explore.General.movingAverageSwitch}
+          />
+        </Stack>
+      }
     >
       {(innerWidth, innerHeight) => (
         <ExploreGraph
           graphStyle={graphStyle}
+          showMovingAverage={showMovingAverage}
           data={slicedData}
           height={innerHeight}
           width={innerWidth}

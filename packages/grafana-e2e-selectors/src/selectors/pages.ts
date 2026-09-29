@@ -1133,6 +1133,9 @@ export const versionedPages = {
       graph: {
         [MIN_GRAFANA_VERSION]: 'Explore Graph',
       },
+      movingAverageSwitch: {
+        '13.3.0': 'data-testid explore graph moving-average-switch',
+      },
       table: {
         [MIN_GRAFANA_VERSION]: 'Explore Table',
       },
