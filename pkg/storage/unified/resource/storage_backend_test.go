@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/gcom"
 	"github.com/grafana/grafana/pkg/storage/unified/resource/kv"
 	"github.com/grafana/grafana/pkg/storage/unified/resourcepb"
+	"github.com/grafana/grafana/pkg/storage/unified/sql/rvmanager"
 	"github.com/grafana/grafana/pkg/util/testutil"
 )
 
@@ -2836,6 +2838,195 @@ func TestKvStorageBackend_GetResourceStats_Success(t *testing.T) {
 	require.Equal(t, "apps", exactStats[0].Group)
 	require.Equal(t, "resources", exactStats[0].Resource)
 	require.Equal(t, int64(2), exactStats[0].Count)
+}
+
+func TestKvStorageBackend_UnpaddedSnowflakeRevisionOrder(t *testing.T) {
+	backend := setupTestStorageBackend(t)
+	ctx := context.Background()
+	oldRV := rvmanager.SnowflakeFromRV(time.Date(2017, 3, 26, 17, 3, 40, 0, time.UTC).UnixMicro())
+
+	save := func(name string, rv int64, action kv.DataAction, body []byte) {
+		t.Helper()
+		require.NoError(t, backend.dataStore.Save(ctx, DataKey{
+			Namespace:       "default",
+			Group:           "apps",
+			Resource:        "resources",
+			Name:            name,
+			ResourceVersion: rv,
+			Action:          action,
+			Folder:          "general",
+		}, bytes.NewReader(body)))
+	}
+
+	t.Run("live revision survives an older deletion that sorts later", func(t *testing.T) {
+		obj, err := createTestObjectWithName("resurrected", appsNamespace, "live")
+		require.NoError(t, err)
+		body := objectToJSONBytes(t, obj)
+		save("resurrected", oldRV, DataActionDeleted, body)
+
+		modernRV, err := writeObject(t, backend, obj, resourcepb.WatchEvent_ADDED, 0)
+		require.NoError(t, err)
+		require.Greater(t, fmt.Sprintf("%d", oldRV), fmt.Sprintf("%d", modernRV))
+
+		response := backend.ReadResource(ctx, &resourcepb.ReadRequest{
+			Key: &resourcepb.ResourceKey{
+				Namespace: "default", Group: "apps", Resource: "resources", Name: "resurrected",
+			},
+		})
+		require.Nil(t, response.Error)
+		require.Equal(t, modernRV, response.ResourceVersion)
+
+		var trash []string
+		_, err = backend.ListHistory(ctx, &resourcepb.ListRequest{
+			Options: &resourcepb.ListOptions{Key: &resourcepb.ResourceKey{
+				Namespace: "default", Group: "apps", Resource: "resources",
+			}},
+			Source: resourcepb.ListRequest_TRASH,
+			Limit:  10,
+		}, func(iter ListIterator) error {
+			for iter.Next() {
+				trash = append(trash, iter.Name())
+			}
+			return iter.Error()
+		})
+		require.NoError(t, err)
+		require.NotContains(t, trash, "resurrected")
+	})
+
+	t.Run("newer deletion is trash even when an older create sorts later", func(t *testing.T) {
+		obj, err := createTestObjectWithName("gone", appsNamespace, "gone")
+		require.NoError(t, err)
+		modernRV, err := writeObject(t, backend, obj, resourcepb.WatchEvent_ADDED, 0)
+		require.NoError(t, err)
+		save("gone", oldRV, DataActionCreated, objectToJSONBytes(t, obj))
+
+		delRV, err := writeObject(t, backend, obj, resourcepb.WatchEvent_DELETED, modernRV)
+		require.NoError(t, err)
+
+		response := backend.ReadResource(ctx, &resourcepb.ReadRequest{
+			Key: &resourcepb.ResourceKey{
+				Namespace: "default", Group: "apps", Resource: "resources", Name: "gone",
+			},
+		})
+		require.NotNil(t, response.Error)
+		require.Equal(t, int32(404), response.Error.Code)
+
+		var trash []string
+		_, err = backend.ListHistory(ctx, &resourcepb.ListRequest{
+			Options: &resourcepb.ListOptions{Key: &resourcepb.ResourceKey{
+				Namespace: "default", Group: "apps", Resource: "resources", Name: "gone",
+			}},
+			Source: resourcepb.ListRequest_TRASH,
+			Limit:  10,
+		}, func(iter ListIterator) error {
+			for iter.Next() {
+				trash = append(trash, iter.Name())
+				require.Equal(t, delRV, iter.ResourceVersion())
+			}
+			return iter.Error()
+		})
+		require.NoError(t, err)
+		require.Equal(t, []string{"gone"}, trash)
+	})
+
+	t.Run("history is newest-first", func(t *testing.T) {
+		obj, err := createTestObjectWithName("history", appsNamespace, "history")
+		require.NoError(t, err)
+		body := objectToJSONBytes(t, obj)
+		modernRV := node.Generate().Int64()
+		require.Greater(t, fmt.Sprintf("%d", oldRV), fmt.Sprintf("%d", modernRV))
+		save("history", oldRV, DataActionUpdated, body)
+		save("history", modernRV, DataActionUpdated, body)
+
+		var rvs []int64
+		_, err = backend.ListHistory(ctx, &resourcepb.ListRequest{
+			Options: &resourcepb.ListOptions{Key: &resourcepb.ResourceKey{
+				Namespace: "default", Group: "apps", Resource: "resources", Name: "history",
+			}},
+			Limit: 10,
+		}, func(iter ListIterator) error {
+			for iter.Next() {
+				rvs = append(rvs, iter.ResourceVersion())
+			}
+			return iter.Error()
+		})
+		require.NoError(t, err)
+		require.Equal(t, []int64{modernRV, oldRV}, rvs)
+	})
+
+	t.Run("pruner keeps the numerically newest revision", func(t *testing.T) {
+		name := "pruned"
+		body := []byte(`{"apiVersion":"apps/v1","kind":"resources","metadata":{"name":"pruned","namespace":"default"}}`)
+		base := time.Date(2017, 6, 1, 0, 0, 0, 0, time.UTC)
+		oldRVs := make([]int64, defaultPrunerHistoryLimit)
+		for i := range oldRVs {
+			oldRVs[i] = rvmanager.SnowflakeFromRV(base.Add(time.Duration(i) * time.Millisecond).UnixMicro())
+			save(name, oldRVs[i], DataActionUpdated, body)
+		}
+		modernRV := node.Generate().Int64()
+		require.Greater(t, fmt.Sprintf("%d", oldRVs[0]), fmt.Sprintf("%d", modernRV))
+		save(name, modernRV, DataActionUpdated, body)
+
+		require.NoError(t, backend.pruneEvents(ctx, PruningKey{
+			Namespace: "default",
+			Group:     "apps",
+			Resource:  "resources",
+			Name:      name,
+		}))
+
+		_, err := backend.dataStore.Get(ctx, DataKey{
+			Namespace:       "default",
+			Group:           "apps",
+			Resource:        "resources",
+			Name:            name,
+			ResourceVersion: modernRV,
+			Action:          DataActionUpdated,
+			Folder:          "general",
+		})
+		require.NoError(t, err)
+
+		_, err = backend.dataStore.Get(ctx, DataKey{
+			Namespace:       "default",
+			Group:           "apps",
+			Resource:        "resources",
+			Name:            name,
+			ResourceVersion: oldRVs[0],
+			Action:          DataActionUpdated,
+			Folder:          "general",
+		})
+		require.ErrorIs(t, err, ErrNotFound)
+
+		count := 0
+		for _, err := range backend.dataStore.Keys(ctx, ListRequestKey{
+			Namespace: "default", Group: "apps", Resource: "resources", Name: name,
+		}, SortOrderAsc) {
+			require.NoError(t, err)
+			count++
+		}
+		require.Equal(t, defaultPrunerHistoryLimit, count)
+	})
+
+	t.Run("modified-since index uses the numerically newest revision", func(t *testing.T) {
+		name := "indexed"
+		modernRV := node.Generate().Int64()
+		require.Greater(t, fmt.Sprintf("%d", oldRV), fmt.Sprintf("%d", modernRV))
+		save(name, modernRV, DataActionUpdated, []byte("live"))
+		save(name, oldRV, DataActionDeleted, []byte("old-delete"))
+
+		var got []*ModifiedResource
+		for item, err := range backend.listModifiedSinceDataStore(ctx, NamespacedResource{
+			Namespace: "default", Group: "apps", Resource: "resources",
+		}, 1) {
+			require.NoError(t, err)
+			if item.Key.Name == name {
+				got = append(got, item)
+			}
+		}
+		require.Len(t, got, 1)
+		require.Equal(t, modernRV, got[0].ResourceVersion)
+		require.Equal(t, resourcepb.WatchEvent_MODIFIED, got[0].Action)
+		require.Equal(t, "live", string(got[0].Value))
+	})
 }
 
 func TestKvStorageBackend_PruneEvents(t *testing.T) {

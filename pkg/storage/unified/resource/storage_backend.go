@@ -591,32 +591,34 @@ func (k *kvStorageBackend) pruneEvents(ctx context.Context, key PruningKey) erro
 	}
 
 	prunerMaxLimit := LookupPrunerHistoryLimit(key.Group, key.Resource, k.dashboardVersionsToKeep)
-	counter := 0
 	deleted := 0
-	// iterate over all keys for the resource and delete versions beyond the configured limit
+	// Descending key order is not newest-first. An 18-digit snowflake from before
+	// 2018-05-25 sorts ahead of a later 19-digit id, so counting the first N keys
+	// keeps the old revisions and deletes the live ones.
+	var versions []DataKey
 	for datakey, err := range k.dataStore.Keys(ctx, ListRequestKey{
 		Namespace: key.Namespace,
 		Group:     key.Group,
 		Resource:  key.Resource,
 		Name:      key.Name,
-	}, SortOrderDesc) {
+	}, SortOrderAsc) {
 		if err != nil {
 			return err
 		}
-
-		// Pruner needs to exclude deleted events
-		if counter < prunerMaxLimit && datakey.Action != DataActionDeleted {
-			counter++
+		if datakey.Action == DataActionDeleted {
 			continue
 		}
-
-		// If we already have the configured number of versions, delete any more create or update events
-		if datakey.Action != DataActionDeleted {
-			err := k.dataStore.Delete(ctx, datakey)
-			if err != nil {
+		versions = append(versions, datakey)
+	}
+	slices.SortFunc(versions, func(a, b DataKey) int {
+		return cmp.Compare(b.ResourceVersion, a.ResourceVersion)
+	})
+	if prunerMaxLimit < len(versions) {
+		for _, datakey := range versions[prunerMaxLimit:] {
+			if err := k.dataStore.Delete(ctx, datakey); err != nil {
 				return err
 			}
-			deleted += 1
+			deleted++
 		}
 	}
 
@@ -1897,31 +1899,14 @@ func (k *kvStorageBackend) listModifiedSinceDataStore(ctx context.Context, key N
 				return
 			}
 
-			if dataKey.ResourceVersion < sinceRv {
-				continue
-			}
-
-			if lastSeenResource == nil {
-				lastSeenResource = &ModifiedResource{
-					Key: resourcepb.ResourceKey{
-						Namespace: dataKey.Namespace,
-						Group:     dataKey.Group,
-						Resource:  dataKey.Resource,
-						Name:      dataKey.Name,
-					},
-					ResourceVersion: dataKey.ResourceVersion,
-					Action:          convertEventType(dataKey.Action),
-				}
-				lastSeenDataKey = dataKey
-			}
-
 			// Boundary detection on (namespace, name) so cross-namespace
 			// scans yield same-named resources from different namespaces
-			// separately. Correctness assumes dataStore.Keys returns
-			// keys in ascending lex order with the shape
-			// `group/resource/ns/name/rv`, so all rows for a given
-			// (namespace, name) are contiguous.
-			if lastSeenResource.Key.Namespace != dataKey.Namespace || lastSeenResource.Key.Name != dataKey.Name {
+			// separately. dataStore.Keys returns keys in ascending lex order
+			// with the shape `group/resource/ns/name/rv`, so all rows for a
+			// given (namespace, name) are contiguous. Within that group the
+			// newest revision is the greatest resource version, not the last
+			// key: an 18-digit snowflake sorts after a later 19-digit one.
+			if lastSeenResource != nil && (lastSeenResource.Key.Namespace != dataKey.Namespace || lastSeenResource.Key.Name != dataKey.Name) {
 				value, err := k.getValueFromDataStore(ctx, lastSeenDataKey)
 				if err != nil {
 					yield(&ModifiedResource{}, err)
@@ -1933,6 +1918,14 @@ func (k *kvStorageBackend) listModifiedSinceDataStore(ctx context.Context, key N
 				if !yield(lastSeenResource, nil) {
 					return
 				}
+				lastSeenResource = nil
+			}
+
+			if dataKey.ResourceVersion < sinceRv {
+				continue
+			}
+			if lastSeenResource != nil && dataKey.ResourceVersion <= lastSeenResource.ResourceVersion {
+				continue
 			}
 
 			lastSeenResource = &ModifiedResource{
@@ -2069,6 +2062,11 @@ func (k *kvStorageBackend) ListHistory(ctx context.Context, req *resourcepb.List
 		}
 		historyKeys = append(historyKeys, dataKey)
 	}
+	// Same-width snowflakes sort the same way numerically and lexicographically.
+	// Mixed widths do not, so newest-first has to be an explicit numeric sort.
+	slices.SortFunc(historyKeys, func(a, b DataKey) int {
+		return cmp.Compare(b.ResourceVersion, a.ResourceVersion)
+	})
 
 	// Check if context has been cancelled
 	if ctx.Err() != nil {
@@ -2153,10 +2151,15 @@ func (k *kvStorageBackend) processTrashEntries(
 		if dk.Name != currentName {
 			// Name transitioned — process the previous group
 			processNameGroup()
+			latestKey = nil
+			currentName = dk.Name
 		}
-		// Track the latest key for the current name (keys are in ASC order, so last one wins)
-		currentName = dk.Name
-		latestKey = &dk
+		// Keep the greatest resource version. The last key in lex order can be
+		// an older unpadded snowflake.
+		if latestKey == nil || dk.ResourceVersion > latestKey.ResourceVersion {
+			key := dk
+			latestKey = &key
+		}
 	}
 	// Process the final name group
 	processNameGroup()

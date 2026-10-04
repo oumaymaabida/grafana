@@ -245,31 +245,10 @@ func (d *dataStore) Keys(ctx context.Context, key ListRequestKey, sort SortOrder
 	}
 }
 
-// LastResourceVersion returns the last key for a given resource
+// LastResourceVersion returns the key with the highest resource version.
 func (d *dataStore) LastResourceVersion(ctx context.Context, key ListRequestKey) (DataKey, error) {
-	if err := key.Validate(); err != nil {
-		return DataKey{}, fmt.Errorf("invalid data key: %w", err)
-	}
-	if key.Group == "" || key.Resource == "" || key.Name == "" {
-		return DataKey{}, fmt.Errorf("group, resource or name is empty")
-	}
-
-	ctx, span := tracer.Start(ctx, "resource.dataStore.LastResourceVersion")
-	defer span.End()
-
-	prefix := key.Prefix()
-	for key, err := range d.kv.Keys(ctx, dataSection, ListOptions{
-		StartKey: prefix,
-		EndKey:   PrefixRangeEnd(prefix),
-		Limit:    1,
-		Sort:     SortOrderDesc,
-	}) {
-		if err != nil {
-			return DataKey{}, err
-		}
-		return ParseKey(key)
-	}
-	return DataKey{}, ErrNotFound
+	latest, _, err := d.GetLatestAndPredecessor(ctx, key)
+	return latest, err
 }
 
 // GetLatestAndPredecessor returns the latest resource version and its immediate predecessor
@@ -287,13 +266,18 @@ func (d *dataStore) GetLatestAndPredecessor(ctx context.Context, key ListRequest
 	defer span.End()
 
 	prefix := key.Prefix()
-	var latest, predecessor DataKey
-	count := 0
+	var (
+		latest, predecessor DataKey
+		hasLatest           bool
+		hasPredecessor      bool
+	)
+	// Every revision of this name has to be considered. Snowflake ids are written
+	// with %d, so an 18-digit id from before 2018-05-25 sorts after a later
+	// 19-digit id. Limit 2 on descending key order therefore returns the wrong pair.
 	for k, err := range d.kv.Keys(ctx, dataSection, ListOptions{
 		StartKey: prefix,
 		EndKey:   PrefixRangeEnd(prefix),
-		Limit:    2, // Get latest and predecessor
-		Sort:     SortOrderDesc,
+		Sort:     SortOrderAsc,
 	}) {
 		if err != nil {
 			return DataKey{}, DataKey{}, err
@@ -302,18 +286,24 @@ func (d *dataStore) GetLatestAndPredecessor(ctx context.Context, key ListRequest
 		if err != nil {
 			return DataKey{}, DataKey{}, err
 		}
-		switch count {
-		case 0:
+		if !hasLatest || parsedKey.ResourceVersion > latest.ResourceVersion {
+			if hasLatest {
+				predecessor = latest
+				hasPredecessor = true
+			}
 			latest = parsedKey
-		case 1:
-			predecessor = parsedKey
+			hasLatest = true
+			continue
 		}
-		count++
+		if !hasPredecessor || parsedKey.ResourceVersion > predecessor.ResourceVersion {
+			predecessor = parsedKey
+			hasPredecessor = true
+		}
 	}
-	if count == 0 {
+	if !hasLatest {
 		return DataKey{}, DataKey{}, ErrNotFound
 	}
-	if count == 1 {
+	if !hasPredecessor {
 		return latest, DataKey{}, nil
 	}
 	return latest, predecessor, nil
@@ -468,16 +458,20 @@ func (d *dataStore) ListResourceKeysAtRevision(ctx context.Context, options List
 
 	return func(yield func(DataKey, error) bool) {
 		defer span.End()
-		var candidateKey *DataKey // The current candidate key we are iterating over
+		var (
+			current      DataKey
+			hasCurrent   bool
+			candidate    DataKey
+			hasCandidate bool
+		)
 
-		// yieldCandidate is a helper function to yield results.
-		// Won't yield if the resource was last deleted.
+		// yieldCandidate yields the selected revision. A resource whose newest
+		// revision at or below rv is a deletion is omitted.
 		yieldCandidate := func() bool {
-			if candidateKey.Action == DataActionDeleted {
-				// Skip because the resource was last deleted.
+			if !hasCandidate || candidate.Action == DataActionDeleted {
 				return true
 			}
-			return yield(*candidateKey, nil)
+			return yield(candidate, nil)
 		}
 
 		for key, err := range iter {
@@ -492,35 +486,25 @@ func (d *dataStore) ListResourceKeysAtRevision(ctx context.Context, options List
 				return
 			}
 
-			if candidateKey == nil {
-				// Skip until we have our first candidate
-				if dataKey.ResourceVersion <= rv {
-					// New candidate found.
-					candidateKey = &dataKey
-				}
-				continue
-			}
-			// Should yield if either:
-			// - We reached the next resource.
-			// - We reached a resource version greater than the target resource version.
-			if !dataKey.SameResource(*candidateKey) || dataKey.ResourceVersion > rv {
+			if hasCurrent && !dataKey.SameResource(current) {
 				if !yieldCandidate() {
 					return
 				}
-				// If we moved to a different resource and the resource version matches, make it the new candidate
-				if !dataKey.SameResource(*candidateKey) && dataKey.ResourceVersion <= rv {
-					candidateKey = &dataKey
-				} else {
-					// If we moved to a different resource and the resource version does not match, reset the candidate
-					candidateKey = nil
-				}
-			} else {
-				// Update candidate to the current key (same resource, valid version)
-				candidateKey = &dataKey
+				hasCandidate = false
+			}
+			current = dataKey
+			hasCurrent = true
+
+			// Keys of one name are contiguous, but they are not ordered by
+			// resource version. Unpadded snowflake ids from before 2018-05-25
+			// sort after later 19-digit ids, so the last key in the scan is
+			// not the newest revision.
+			if dataKey.ResourceVersion <= rv && (!hasCandidate || dataKey.ResourceVersion > candidate.ResourceVersion) {
+				candidate = dataKey
+				hasCandidate = true
 			}
 		}
-		if candidateKey != nil {
-			// Yield the last selected object
+		if hasCandidate {
 			if !yieldCandidate() {
 				return
 			}
