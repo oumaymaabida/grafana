@@ -3646,3 +3646,99 @@ func testDataStoreListStoredResources(t *testing.T, ctx context.Context, ds *dat
 		require.Error(t, err)
 	})
 }
+
+// A snowflake written with %d from before 2018-05-25 has fewer digits than a
+// later id, and the shorter id sorts after the later one. Latest-revision
+// selection has to follow the numeric resource version.
+func TestIntegrationDataStore_UnpaddedSnowflakeRevisionOrder(t *testing.T) {
+	runDataStoreTestWith(t, "badger", setupTestDataStore, testUnpaddedSnowflakeRevisionOrder)
+	runDataStoreTestWith(t, "sqlkv", setupTestDataStoreSqlKv, testUnpaddedSnowflakeRevisionOrder)
+}
+
+func testUnpaddedSnowflakeRevisionOrder(t *testing.T, ctx context.Context, ds *dataStore) {
+	testutil.SkipIntegrationTestInShortMode(t)
+
+	oldRV := rvmanager.SnowflakeFromRV(time.Date(2017, 3, 26, 17, 3, 40, 0, time.UTC).UnixMicro())
+	modernRV := node.Generate().Int64()
+	require.Greater(t, modernRV, oldRV)
+	require.Greater(t, fmt.Sprintf("%d", oldRV), fmt.Sprintf("%d", modernRV))
+
+	key := ListRequestKey{
+		Namespace: "default",
+		Group:     "apps",
+		Resource:  "resources",
+		Name:      "resurrected",
+	}
+	save := func(rv int64, action kv.DataAction) {
+		t.Helper()
+		require.NoError(t, ds.Save(ctx, DataKey{
+			Namespace:       key.Namespace,
+			Group:           key.Group,
+			Resource:        key.Resource,
+			Name:            key.Name,
+			ResourceVersion: rv,
+			Action:          action,
+			Folder:          "general",
+		}, bytes.NewReader([]byte("v"))))
+	}
+	save(modernRV, DataActionUpdated)
+	save(oldRV, DataActionDeleted)
+
+	t.Run("list latest returns the live revision", func(t *testing.T) {
+		var got []DataKey
+		for dataKey, err := range ds.ListResourceKeysAtRevision(ctx, ListRequestOptions{Key: key}) {
+			require.NoError(t, err)
+			got = append(got, dataKey)
+		}
+		require.Len(t, got, 1)
+		require.Equal(t, modernRV, got[0].ResourceVersion)
+		require.Equal(t, DataActionUpdated, got[0].Action)
+	})
+
+	t.Run("latest and predecessor follow numeric order", func(t *testing.T) {
+		latest, predecessor, err := ds.GetLatestAndPredecessor(ctx, key)
+		require.NoError(t, err)
+		require.Equal(t, modernRV, latest.ResourceVersion)
+		require.Equal(t, oldRV, predecessor.ResourceVersion)
+	})
+
+	t.Run("last resource version is the numeric maximum", func(t *testing.T) {
+		last, err := ds.LastResourceVersion(ctx, key)
+		require.NoError(t, err)
+		require.Equal(t, modernRV, last.ResourceVersion)
+	})
+
+	t.Run("a newer deletion still hides the resource", func(t *testing.T) {
+		deletedName := ListRequestKey{
+			Namespace: key.Namespace,
+			Group:     key.Group,
+			Resource:  key.Resource,
+			Name:      "actually-deleted",
+		}
+		require.NoError(t, ds.Save(ctx, DataKey{
+			Namespace:       deletedName.Namespace,
+			Group:           deletedName.Group,
+			Resource:        deletedName.Resource,
+			Name:            deletedName.Name,
+			ResourceVersion: oldRV,
+			Action:          DataActionCreated,
+			Folder:          "general",
+		}, bytes.NewReader([]byte("old"))))
+		require.NoError(t, ds.Save(ctx, DataKey{
+			Namespace:       deletedName.Namespace,
+			Group:           deletedName.Group,
+			Resource:        deletedName.Resource,
+			Name:            deletedName.Name,
+			ResourceVersion: modernRV,
+			Action:          DataActionDeleted,
+			Folder:          "general",
+		}, bytes.NewReader([]byte("gone"))))
+
+		var got []DataKey
+		for dataKey, err := range ds.ListResourceKeysAtRevision(ctx, ListRequestOptions{Key: deletedName}) {
+			require.NoError(t, err)
+			got = append(got, dataKey)
+		}
+		require.Empty(t, got)
+	})
+}
